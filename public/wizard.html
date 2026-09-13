@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Telegram → Stremio setup</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0f1115; color: #e6e8eb; max-width: 560px; margin: 40px auto; padding: 0 20px;
+  }
+  h1 { font-size: 1.4rem; }
+  .step { display: none; background: #1a1d24; border-radius: 12px; padding: 24px; margin-top: 16px; }
+  .step.active { display: block; }
+  .step h2 { margin-top: 0; font-size: 1.1rem; color: #9fb4ff; }
+  button {
+    background: #3b6bff; color: white; border: none; border-radius: 8px;
+    padding: 10px 18px; font-size: 0.95rem; cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button.secondary { background: #2a2e38; }
+  input[type=text], input[type=password] {
+    width: 100%; box-sizing: border-box; padding: 10px; border-radius: 8px;
+    border: 1px solid #333844; background: #0f1115; color: #e6e8eb; margin: 8px 0;
+  }
+  #qr-img { display: block; margin: 16px auto; background: white; padding: 12px; border-radius: 8px; }
+  .channel-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid #2a2e38; }
+  .channel-row label { flex: 1; cursor: pointer; }
+  .kind-badge { font-size: 0.7rem; padding: 2px 6px; border-radius: 4px; background: #2a2e38; color: #9fb4ff; }
+  .muted { color: #8b92a3; font-size: 0.9rem; }
+  #link-box { background: #0f1115; border: 1px solid #333844; border-radius: 8px; padding: 12px; word-break: break-all; font-family: monospace; font-size: 0.85rem; }
+  .status-line { margin-top: 10px; }
+  a.button-link { display: inline-block; text-decoration: none; margin-top: 10px; }
+</style>
+</head>
+<body>
+  <h1>Telegram → Stremio setup</h1>
+
+  <div class="step active" id="step-login">
+    <h2>Step 1 — Connect Telegram</h2>
+    <p class="muted">Scan this with Telegram on your phone: Settings → Devices → Link Desktop Device.</p>
+    <button id="btn-start-login">Show QR code</button>
+    <div id="qr-holder"></div>
+    <div id="password-holder" style="display:none">
+      <p>This account has a 2FA password:</p>
+      <input type="password" id="password-input" placeholder="Cloud password" />
+      <button id="btn-submit-password">Continue</button>
+    </div>
+    <p class="status-line muted" id="login-status"></p>
+  </div>
+
+  <div class="step" id="step-channels">
+    <h2>Step 2 — Choose channels</h2>
+    <input type="text" id="channel-search" placeholder="Search your channels/groups by name..." />
+    <div id="channel-list" class="muted">Loading your channels...</div>
+    <button id="btn-save-channels" style="margin-top:14px">Save & continue</button>
+  </div>
+
+  <div class="step" id="step-done">
+    <h2>Step 3 — Install in Stremio</h2>
+    <p class="muted">Your personal addon link:</p>
+    <div id="link-box"></div>
+    <p class="muted" id="install-hint">
+      In the Stremio app: Addons → Community Addons → paste the link above into
+      the search bar at the top.
+    </p>
+    <a class="button-link" id="stremio-install-link" href="#"><button>Open in Stremio</button></a>
+    <p class="muted" id="https-note" style="display:none">
+      "Open in Stremio" needs HTTPS - this server is running on plain HTTP, so
+      Stremio's own fetch for that button will fail with "Failed to fetch".
+      Paste the link above into Stremio's addon search bar instead; that path
+      works over HTTP.
+    </p>
+  </div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  let loginId = null;
+  let accountId = null;
+  let allDialogs = [];
+  let selectedIds = new Set();
+
+  function showStep(id) {
+    document.querySelectorAll('.step').forEach((el) => el.classList.remove('active'));
+    $(id).classList.add('active');
+  }
+
+  // ---------- Step 1: QR login ----------
+
+  $('btn-start-login').addEventListener('click', async () => {
+    $('btn-start-login').disabled = true;
+    const res = await fetch('/api/login/start', { method: 'POST' });
+    const data = await res.json();
+    loginId = data.loginId;
+    pollLoginStatus();
+  });
+
+  async function pollLoginStatus() {
+    const res = await fetch(`/api/login/${loginId}/status`);
+    const data = await res.json();
+
+    if (data.status === 'pending' && data.qrDataUrl) {
+      $('qr-holder').innerHTML = `<img id="qr-img" src="${data.qrDataUrl}" width="240" height="240" />`;
+      $('login-status').textContent = 'Waiting for scan...';
+    } else if (data.status === 'need_password') {
+      $('password-holder').style.display = 'block';
+      $('login-status').textContent = '2FA password required.';
+    } else if (data.status === 'success') {
+      accountId = data.accountId;
+      $('login-status').textContent = 'Connected!';
+      await loadDialogs();
+      showStep('step-channels');
+      return; // stop polling
+    } else if (data.status === 'error') {
+      $('login-status').textContent = 'Error: ' + (data.error || 'unknown error');
+    }
+
+    setTimeout(pollLoginStatus, 1500);
+  }
+
+  $('btn-submit-password').addEventListener('click', async () => {
+    const password = $('password-input').value;
+    await fetch(`/api/login/${loginId}/password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
+    $('password-holder').style.display = 'none';
+  });
+
+  // ---------- Step 2: pick channels ----------
+
+  async function loadDialogs() {
+    const res = await fetch(`/api/accounts/${accountId}/dialogs`);
+    allDialogs = await res.json();
+    renderChannelList(allDialogs);
+  }
+
+  function renderChannelList(list) {
+    if (list.length === 0) {
+      $('channel-list').innerHTML = '<p class="muted">No channels/groups found.</p>';
+      return;
+    }
+    $('channel-list').innerHTML = list
+      .map(
+        (c) => `
+      <div class="channel-row">
+        <input type="checkbox" id="ch-${c.id}" ${selectedIds.has(c.id) ? 'checked' : ''} />
+        <label for="ch-${c.id}">${escapeHtml(c.title)} <span class="kind-badge">${c.kind}</span></label>
+      </div>`,
+      )
+      .join('');
+    list.forEach((c) => {
+      $(`ch-${c.id}`).addEventListener('change', (e) => {
+        if (e.target.checked) selectedIds.add(c.id);
+        else selectedIds.delete(c.id);
+      });
+    });
+  }
+
+  $('channel-search').addEventListener('input', (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    const filtered = q ? allDialogs.filter((c) => c.title.toLowerCase().includes(q)) : allDialogs;
+    renderChannelList(filtered);
+  });
+
+  $('btn-save-channels').addEventListener('click', async () => {
+    const chosen = allDialogs.filter((c) => selectedIds.has(c.id));
+    if (chosen.length === 0) {
+      alert('Pick at least one channel or group.');
+      return;
+    }
+    await fetch(`/api/accounts/${accountId}/channels`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channels: chosen }),
+    });
+    showInstallLink();
+  });
+
+  // ---------- Step 3: install link ----------
+
+  function showInstallLink() {
+    const manifestUrl = `${location.origin}/${accountId}/manifest.json`;
+    const stremioUrl = `stremio://${location.host}/${accountId}/manifest.json`;
+    $('link-box').textContent = manifestUrl;
+    $('stremio-install-link').href = stremioUrl;
+    // Stremio's stremio:// handler always fetches the manifest over HTTPS,
+    // so the button can't work against a plain-HTTP dev server - flag that
+    // up front instead of letting people hit a confusing fetch error.
+    $('https-note').style.display =
+      location.protocol === 'http:' ? 'block' : 'none';
+    showStep('step-done');
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+</script>
+</body>
+</html>
