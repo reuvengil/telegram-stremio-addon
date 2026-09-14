@@ -56,14 +56,16 @@ export class StremioController {
   }
 
   @Get('catalog/series/telegram_channels.json')
-  async getCatalog(@Param('accountId') accountId: string) {
+  async getCatalog(@Param('accountId') accountId: string, @Req() req: Request) {
     const channels = await this.channels.find({ where: { accountId } });
+    const host = `${req.protocol}://${req.get('host')}`;
     return {
       metas: channels.map((c) => ({
         id: this.seriesId(c),
         type: 'series',
         name: c.title,
         description: `Videos from the Telegram ${c.kind} "${c.title}", in post order.`,
+        poster: `${host}/${accountId}/poster/${this.seriesId(c)}.jpg`,
       })),
     };
   }
@@ -72,6 +74,7 @@ export class StremioController {
   async getMeta(
     @Param('accountId') accountId: string,
     @Param('seriesId') seriesIdParam: string,
+    @Req() req: Request,
   ) {
     const channel = await this.findChannelBySeriesId(accountId, seriesIdParam);
     const videos = await this.telegram.listChannelVideos(
@@ -79,12 +82,14 @@ export class StremioController {
       channel.channelId,
       channel.accessHash,
     );
+    const host = `${req.protocol}://${req.get('host')}`;
 
     return {
       meta: {
         id: seriesIdParam,
         type: 'series',
         name: channel.title,
+        poster: `${host}/${accountId}/poster/${seriesIdParam}.jpg`,
         videos: videos.map((v, i) => ({
           id: `${seriesIdParam}:${v.messageId}`,
           title: v.title,
@@ -93,6 +98,30 @@ export class StremioController {
         })),
       },
     };
+  }
+
+  // Proxies the channel's Telegram profile photo as the series poster -
+  // Stremio needs a plain image URL, it can't use our API responses.
+  @Get('poster/:seriesId.jpg')
+  async getPoster(
+    @Param('accountId') accountId: string,
+    @Param('seriesId') seriesIdParam: string,
+    @Res() res: Response,
+  ) {
+    const channel = await this.findChannelBySeriesId(accountId, seriesIdParam);
+    const photo = await this.telegram.getChannelPhoto(
+      accountId,
+      channel.channelId,
+      channel.accessHash,
+    );
+    if (!photo) {
+      throw new NotFoundException('No photo available for this channel');
+    }
+    res.set({
+      'Content-Type': 'image/jpeg',
+      'Cache-Control': 'public, max-age=3600',
+    });
+    res.send(photo);
   }
 
   @Get('stream/series/:videoId.json')

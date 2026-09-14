@@ -211,6 +211,29 @@ export class TelegramService {
     });
   }
 
+  // Used as the Stremio series poster. Fetched fresh each time rather than
+  // cached anywhere - channel photos rarely change and this keeps the same
+  // "always current" approach as video streaming, at the cost of a Telegram
+  // round-trip per request (mitigate with a CDN/cache in front if needed).
+  async getChannelPhoto(
+    accountId: string,
+    channelId: string,
+    accessHash: string,
+  ): Promise<Buffer | undefined> {
+    const client = await this.getClientForAccount(accountId);
+    const peer = this.peerFor(channelId, accessHash);
+    try {
+      const photo = await client.downloadProfilePhoto(peer, { isBig: true });
+      if (!Buffer.isBuffer(photo) || photo.length === 0) return undefined;
+      return photo;
+    } catch (err) {
+      this.logger.warn(
+        `Failed to download photo for channel ${channelId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return undefined;
+    }
+  }
+
   async listChannelVideos(
     accountId: string,
     channelId: string,

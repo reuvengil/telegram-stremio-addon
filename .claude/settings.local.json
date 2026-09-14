@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(awk '/^async function downloadProfilePhoto/,/^}/' node_modules/telegram/client/downloads.js)"
+    ]
+  }
+}
